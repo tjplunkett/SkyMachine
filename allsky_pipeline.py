@@ -80,7 +80,7 @@ def calc_r(z, F, R, k3, k5):
 
 def drop_close_sources(df, radius_deg=1.0):
     """
-    Remove stars that lie too close together.
+    Remove stars that lie too close together, prioritising bright stars.
 
     Close stars cause blended photometry and unreliable catalog
     matching, so they are removed once during initialization.
@@ -98,25 +98,23 @@ def drop_close_sources(df, radius_deg=1.0):
         Catalog with close neighbours removed.
     """
 
-    coords = SkyCoord(ra=df["RA"].values * u.deg, dec=df["DEC"].values * u.deg)
+    df = df.sort_values('Mag').reset_index(drop=True)
+
+    coords = SkyCoord(df["RA"].values*u.deg, df["DEC"].values*u.deg)
     radius = radius_deg * u.deg
 
-    idx1, idx2, sep, _ = coords.search_around_sky(coords, radius)
+    keep = np.ones(len(df), dtype=bool)
 
-    remove = set()
-
-    for i, j in zip(idx1, idx2):
-
-        if i == j:
+    for i in range(len(df)):
+        if not keep[i]:
             continue
 
-        if j not in remove:
-            remove.add(j)
+        sep = coords[i].separation(coords)
+        close = (sep < radius) & (sep > 0*u.deg)
 
-    mask = np.ones(len(df), dtype=bool)
-    mask[list(remove)] = False
+        keep[close] = False
 
-    return df[mask].reset_index(drop=True)
+    return df[keep].reset_index(drop=True)
 
 # ------------------------------------------------------------------
 # Global variables shared by workers

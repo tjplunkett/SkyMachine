@@ -334,7 +334,7 @@ def star_detection(gray_im, masked_im):
     threshold = 3 * bkg.background_rms
 
     # Detect peaks corresponding to stars, small detection box since stars are ~1–2 pixels
-    tbl = find_peaks(data_sub, threshold, box_size=7, centroid_func=centroid_com)
+    tbl = find_peaks(data_sub, threshold, box_size=3, centroid_func=centroid_com)
 
     return tbl.to_pandas(), bkg
 

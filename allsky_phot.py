@@ -199,6 +199,11 @@ def run_photometry_circ(im_gray, match_df, ap, JD, exp_time):
     phot_df['x_centroid'] = phot_df['x_centroid'].fillna(phot_df.get('x_guess'))
     phot_df['y_centroid'] = phot_df['y_centroid'].fillna(phot_df.get('y_guess'))
     phot_df = phot_df.drop(columns=['x_guess', 'y_guess'], errors='ignore')
+    
+    # Remove duplicate stars (keep brightest)
+    phot_df = phot_df.sort_values('Mag')
+    phot_df = phot_df.drop_duplicates(subset='BSC Star Number', keep='first')
+    phot_df = phot_df.reset_index(drop=True)
 
     return phot_df
 
