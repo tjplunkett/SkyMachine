@@ -44,11 +44,12 @@ from photutils.background import Background2D, MedianBackground
 from astropy.coordinates import EarthLocation, SkyCoord, AltAz
 from astropy import units as u
 from astropy.time import Time
+from astropy.io import fits
 
 # Initialise EasyOCR reader once so it can be reused efficiently
 reader = easyocr.Reader(['en'])  # Reads English text from images
 
-def get_frames(path2avi):
+def get_frames(path2avi, output):
     """
     Extract individual frames from an all-sky video.
 
@@ -73,7 +74,7 @@ def get_frames(path2avi):
     no more frames are returned.
     """
 
-    outpath = os.path.dirname(path2avi)
+    outpath = output
 
     # Load video file into memory
     capture = cv2.VideoCapture(path2avi)
@@ -160,7 +161,7 @@ def create_maskim(image):
     # Apply mask
     result = np.bitwise_and(image, mask)
 
-    return result
+    return result, mask
 
 
 def get_modtime(path):
@@ -425,25 +426,23 @@ def mask_moon(image):
 
     # Smooth image to reduce noise
     blur = cv2.GaussianBlur(image, (25, 25), 0)
-
-    # Locate brightest pixel
     (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(blur)
 
-    # Create circular mask for moon
+    # Moon mask
     moon_mask = np.zeros_like(blur)
-
-    moon_mask = cv2.circle(moon_mask, maxLoc, 100, (255, 255, 255), -1)
-
-    # Invert mask so moon becomes black
+    moon_mask = cv2.circle(moon_mask, maxLoc, cfg.MOON_RADIUS, (255, 255, 255), -1)
     moon_mask = cv2.bitwise_not(moon_mask)
 
-    # Apply mask
-    no_moon = np.bitwise_and(image, moon_mask)
+    # Zenith mask (from original image)
+    _, zenith_mask = create_maskim(image)
 
-    # Also apply zenith mask
-    no_moon = create_maskim(no_moon)
+    # Combine masks
+    full_mask = np.bitwise_and(zenith_mask, moon_mask)
 
-    return no_moon
+    # Apply combined mask
+    no_moon = np.bitwise_and(image, full_mask)
+
+    return no_moon, full_mask
 
 def fix_exp(exp_str):
     """
@@ -492,3 +491,59 @@ def fix_exp(exp_str):
         exp = default_exp
 
     return exp
+
+def make_header(primary_hdu, timestamp,  moon_alt, moon_ill):
+    """
+    Populate the FITS header of a primary HDU with observatory, image,
+    photometric, and optional lunar metadata.
+
+    Parameters
+    ----------
+    primary_hdu : astropy.io.fits.PrimaryHDU
+        The primary HDU object whose header will be updated.
+    moon_alt : astropy.units.Quantity or None
+        Altitude of the Moon. If None, Moon-related header keywords
+        will not be added.
+    moon_ill : float or None
+        Fractional illumination of the Moon (0 to 1). Used only if
+        `moon_alt` is provided.
+
+    Returns
+    -------
+    primary_hdu : astropy.io.fits.PrimaryHDU
+        The updated HDU with new header entries.
+
+    Notes
+    -----
+    Header categories added:
+    - Site properties (location and observatory info)
+    - Image properties (exposure, type, masking)
+    - Photometric properties (background, zeropoint, extinction)
+    - Moon properties (altitude, illumination, mask radius; if available)
+    """
+    
+    # Site properties
+    primary_hdu.header['OBSNAME'] = (cfg.OBS_NAME, 'Observatory name')
+    primary_hdu.header['LATITUDE'] = (cfg.LATITUDE, 'Observatory latitude in degrees (North positive)')
+    primary_hdu.header['LONGTUDE'] = (cfg.LONGITUDE, 'Observatory longitude in degrees (East positive)')
+    primary_hdu.header['HEIGHT'] = (cfg.HEIGHT, 'Observatory height in metres')
+    
+    # Image properties
+    primary_hdu.header['DATE-OBS'] = (timestamp, 'Timestamp for image (in iso format)')
+    primary_hdu.header['MASKX'] = (cfg.MASK_X, 'Zenith mask width in x-axis')
+    primary_hdu.header['MASKY'] = (cfg.MASK_Y, 'Zenith mask width in y-axis') 
+    
+    # Photometric properties
+    primary_hdu.header['MAGZP'] = (cfg.MAG_ZEROPOINT, 'Magnitude zeropoint') 
+    primary_hdu.header['XTERM'] = (cfg.AIRMASS_TERM, 'Airmass extinction coefficient') 
+    
+    # Moon properties
+    if moon_alt is not None:
+        primary_hdu.header['MOONALT'] = (moon_alt.value, 'Moon Altitude in degrees')
+        primary_hdu.header['MOONILL'] = (moon_ill, 'Moon illumination (0 to 1)')
+        primary_hdu.header['MOONRAD'] = (cfg.MOON_RADIUS, 'Radius of moon mask')
+        
+    primary_hdu.header['COMMENT'] = 'Produced by SkyMachine v1 on {:}'.format(str(datetime.now()))
+        
+    return primary_hdu
+        

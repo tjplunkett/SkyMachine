@@ -38,6 +38,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from astropy.io import fits
 
 from astropy.coordinates import EarthLocation, SkyCoord, AltAz
 from astropy.time import Time
@@ -291,23 +292,24 @@ def calib_phot(phot_df, exp):
 
     return zeropoint, intercept_err, extinction, slope_err
 
-def make_exmap(file, im_gray, phot_df, zp, k, exp, max_ext, save=False):
+def make_exmap(output, time, im_gray, phot_df, zp, k, exp, max_ext, save=False):
     """
-    Generate a spatial extinction map across the all-sky image.
-
-    The extinction is computed from the difference between observed
-    instrumental magnitude and expected catalog magnitude.
+    Generate a spatial extinction map from all-sky photometry.
 
     Parameters
     ----------
-    file : str
-        Input image filename.
+    output : str
+        Directory where output files will be saved.
+
+    time : str
+        Observation timestamp (ISO format). Used in output filenames and headers.
 
     im_gray : ndarray
-        Grayscale all-sky image.
+        2D grayscale all-sky image array.
 
     phot_df : pandas.DataFrame
-        Photometry results.
+        Table of photometric measurements. Must contain at least the columns:
+        'Flux', 'Mag', 'Airmass', 'x_centroid', and 'y_centroid'.
 
     zp : float
         Photometric zeropoint.
@@ -319,27 +321,31 @@ def make_exmap(file, im_gray, phot_df, zp, k, exp, max_ext, save=False):
         Exposure time in seconds.
 
     max_ext : float
-        Maximum extinction value used for normalization.
+        Maximum extinction value used for normalization and NaN replacement.
 
     save : bool, optional
-        If True, save extinction map and photometry table.
+        If True, saves the extinction map (FITS), a visualization (JPG),
+        and the photometry table (CSV). Default is False.
 
     Returns
     -------
     float
-        Median extinction value for the frame.
+        Median value of the smoothed extinction map (ignoring NaNs).
+
+    Outputs (if save=True)
+    ----------------------
+    - FITS file: Smoothed extinction map with header metadata.
+    - JPG image: Overlay of extinction on the sky image.
+    - CSV file: Photometry table including computed extinction values.
     """
 
+    # Compute the extinction values
     flux = phot_df['Flux'].to_numpy()
     inst_mag = -2.5 * np.log10(flux / exp)
-
-    phot_df['Extinction'] = (
-        (zp + inst_mag - abs(k) * phot_df['Airmass'])
-        - phot_df['Mag']
-    )
-
+    phot_df['Extinction'] = (zp + inst_mag - abs(k) * phot_df['Airmass']) - phot_df['Mag']
     phot_df['Extinction'] = phot_df['Extinction'].fillna(max_ext)
 
+    # Create grid and interpolate
     grid_x, grid_y = np.mgrid[0:im_gray.shape[1], 0:im_gray.shape[0]]
 
     grid_extinction = interpolate.griddata(points=(phot_df['x_centroid'].to_numpy(),\
@@ -357,15 +363,31 @@ def make_exmap(file, im_gray, phot_df, zp, k, exp, max_ext, save=False):
                                                          method='nearest')
 
     grid_extinction[grid_extinction < 0] = 0
-
-    grid_extinction_smooth = ndimage.median_filter(grid_extinction, size=90)
-
+    grid_extinction_smooth = ndimage.median_filter(grid_extinction, size=cfg.MEDFILT_SIZE)
     grid_z = (10 ** (grid_extinction_smooth / 2.5)) / (10 ** (max_ext / 2.5))
     
     # Save out the extinction maps and photometry, if requested
     if save:
+        # --- Create Primary HDU ---
+        primary_hdu = fits.PrimaryHDU(data=grid_extinction_smooth.astype(np.float32))
 
-        # Make background more visible
+        # --- Populate standard header using your function ---
+        primary_hdu = make_header(primary_hdu, time, None, None)
+
+        # --- Add extinction-specific header keywords ---
+        primary_hdu.header['IMTYPE'] = ('EXTMAP', 'Type of image')
+        primary_hdu.header['EXPTIME'] = (exp, 'Exposure time (s)')
+        primary_hdu.header['MAXEXT'] = (max_ext, 'Max extinction for normalization')
+        primary_hdu.header['MAGLIMIT'] = (cfg.MAG_LIMIT, 'Magnitude limit for matched stars')
+        primary_hdu.header['PHOTAP'] = (cfg.PHOT_APERTURE, 'Aperture radius for photometry (pixels)')
+        primary_hdu.header['MATCHRAD'] = (cfg.MATCH_RADIUS, 'Radius for source matching (pixels)')
+        
+
+        # --- Save to FITS file ---
+        ext_filename = os.path.join(output, "AllSky_{:}_ext.fits".format(time.replace(':','-')))
+        primary_hdu.writeto(ext_filename, overwrite=True)
+
+        # Now make a jpg version
         plt.imshow(im_gray, cmap='gray', vmin=np.percentile(im_gray, 5),
                    vmax=np.percentile(im_gray, 95), alpha=1.0)
 
@@ -387,9 +409,10 @@ def make_exmap(file, im_gray, phot_df, zp, k, exp, max_ext, save=False):
 
         plt.colorbar(label='Extinction Index')
 
-        plt.savefig(file.replace('.jpg', '_ext.jpg'), dpi=300)
+        plt.savefig(ext_filename.replace('.fits', '.jpg'), dpi=300)
         plt.close()
-
-        phot_df.to_csv(file.replace('.jpg', '_phot.csv'))
+    
+        phot_filename = os.path.join(output, 'AllSky_{:}_phot.csv'.format(time.replace(':','-')))
+        phot_df.to_csv(phot_filename)
         
     return np.nanmedian(grid_extinction_smooth)
