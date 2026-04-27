@@ -300,13 +300,13 @@ def star_detection(gray_im, masked_im):
         - Star size: ~1–2 pixels
 
     Background modelling parameters:
-        box_size = (40,40)
+        box_size = (30,30)
 
         filter_size = (3,3)
             Smooths the background map to remove noise.
 
     Detection threshold:
-        threshold = 3 × background RMS
+        threshold = 5 × background RMS
 
     Masking:
         Pixels with value = 0 are excluded from the background
@@ -322,7 +322,7 @@ def star_detection(gray_im, masked_im):
     # Estimate spatially varying background
     bkg = Background2D(
         gray_im,
-        box_size=(40, 40),
+        box_size=(50, 50),
         filter_size=(3, 3),
         mask=mask,
         bkg_estimator=bkg_estimator
@@ -332,10 +332,10 @@ def star_detection(gray_im, masked_im):
     data_sub = masked_im - bkg.background
 
     # Local detection threshold map
-    threshold = 3 * bkg.background_rms
+    threshold = 5 * bkg.background_rms
 
     # Detect peaks corresponding to stars, small detection box since stars are ~1–2 pixels
-    tbl = find_peaks(data_sub, threshold, box_size=3, centroid_func=centroid_com)
+    tbl = find_peaks(data_sub, threshold, box_size=5, centroid_func=centroid_com)
 
     return tbl.to_pandas(), bkg
 
@@ -461,7 +461,7 @@ def fix_exp(exp_str):
     default_exp = float(cfg.EXP_TIME)
 
     if not exp_str:
-        return default_exp
+        return None
     
     # remove trailing 's' if present
     exp_str = str(exp_str).strip().replace('s', '')  # remove trailing 's' if present
@@ -479,16 +479,16 @@ def fix_exp(exp_str):
             except:
                 exp = t1  # fallback to integer part only
         except:
-            exp = default_exp
+            exp = None
     else:
         # no decimal point, try parsing whole string
         try:
             exp = float(exp_str)
         except:
-            exp = default_exp
+            exp = None
 
     if exp > default_exp:
-        exp = default_exp
+        exp = None
 
     return exp
 

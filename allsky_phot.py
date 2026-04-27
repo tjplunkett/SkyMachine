@@ -345,12 +345,12 @@ def make_exmap(output, time, im_gray, phot_df, zp, k, exp, max_ext, save=False):
     phot_df['Extinction'] = (zp + inst_mag - abs(k) * phot_df['Airmass']) - phot_df['Mag']
     phot_df['Extinction'] = phot_df['Extinction'].fillna(max_ext)
 
-    # Create grid and interpolate
-    grid_x, grid_y = np.mgrid[0:im_gray.shape[1], 0:im_gray.shape[0]]
+    # Correct grid definition
+    grid_y, grid_x = np.mgrid[0:im_gray.shape[0], 0:im_gray.shape[1]]
 
     grid_extinction = interpolate.griddata(points=(phot_df['x_centroid'].to_numpy(),\
                                                    phot_df['y_centroid'].to_numpy()),\
-                                           values=phot_df['Extinction'].to_numpy(),\
+                                           values=phot_df['Extinction'].to_numpy(),
                                            xi=(grid_x, grid_y), method='nearest')
 
     nan_mask = np.isnan(grid_extinction)

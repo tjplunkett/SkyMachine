@@ -169,7 +169,7 @@ def init_worker(reference_path):
 # Main per-frame processing function
 # ------------------------------------------------------------------
 
-def process_file(file, output, save = False, verbose = False):
+def process_file(file, output, run_ext, save = False, verbose = False):
     """
     Process a single all-sky image.
 
@@ -209,8 +209,7 @@ def process_file(file, output, save = False, verbose = False):
         date_str, time_str, exp = get_imtext(im_gray, date_stamp, time_stamp)
         exp_time = fix_exp(exp)
         
-        if date_str is not None and time_str is not None and float(exp_time) >= 5.0:
-           
+        if date_str and time_str and exp_time is not None and exp_time >= 5.0:
             time_str = time_str.replace(".", ":")
             time_str = time_str.replace("::", ":")
 
@@ -228,6 +227,7 @@ def process_file(file, output, save = False, verbose = False):
 
             moon_alt = None
             moon_az = None
+            moon_ill = None
 
             try:
                 moon = OBS.moon_altaz(astro_time)
@@ -235,7 +235,7 @@ def process_file(file, output, save = False, verbose = False):
                 moon_az = moon.az
                 moon_ill = OBS.moon_illumination(astro_time)
 
-                if moon_alt > 0 * u.deg:
+                if moon_alt > 0 * u.deg and moon_ill > 1/3:
                     mask_im, full_mask = mask_moon(im_gray)
                 else:
                     mask_im, full_mask = create_maskim(im_gray)
@@ -250,6 +250,8 @@ def process_file(file, output, save = False, verbose = False):
             # ---------------------------------------------------------
 
             tas_df, bkg = star_detection(im_gray, mask_im)
+            tas_df = tas_df.replace([np.inf, -np.inf], np.nan)
+            tas_df = tas_df.dropna(subset=['x_centroid', 'y_centroid'])
             bkg_median = np.nanmedian(bkg.background)
             bkg_rms = bkg.background_rms
 
@@ -272,13 +274,6 @@ def process_file(file, output, save = False, verbose = False):
                 # --- Combine and save ---
                 hdul = fits.HDUList([primary_hdu, rms_hdu])
                 hdul.writeto(bkg_filename, overwrite=True)
-                
-                # Make header for masked image and save
-                #mask_hdr = fits.Header()
-                #mask_hdr['IMTYPE'] = ('Mask', 'Type of Image')
-                #mask_hdr['JD'] = (JD, 'Julian Date')
-                #mask_filename = os.path.join(output, "{:}_mask.fits".format(timestamp_str))
-                #fits.writeto(mask_filename, full_mask, header = mask_hdr, overwrite=True)
 
             # ----------------------------------------------------------
             # Catalog transformation
@@ -288,63 +283,65 @@ def process_file(file, output, save = False, verbose = False):
             mask = ((ybsc_df.Alt.values >= cfg.ALT_MIN) & (ybsc_df.Mag.values < cfg.MAG_LIMIT))
             ybsc_sub = ybsc_df.loc[mask]
 
-            # ----------------------------------------------------------
-            # Remove stars within 35° of Moon
-            # ----------------------------------------------------------
+            # -------------------------------------------------------------
+            # Remove stars within 35° of Moon (if illuminated more than 1/3)
+            # -------------------------------------------------------------
 
-            if moon_alt is not None and moon_alt > 0 * u.deg:
+            if moon_alt is not None and moon_ill is not None:
+                if moon_alt > 0 * u.deg and moon_ill > 1/3:
+                    moon_coord = SkyCoord(alt=moon_alt, az=moon_az, frame="altaz")
+                    star_coords = SkyCoord(alt=ybsc_sub.Alt.values * u.deg,\
+                                           az=ybsc_sub.Az.values * u.deg,\
+                                           frame="altaz")
 
-                moon_coord = SkyCoord(alt=moon_alt, az=moon_az, frame="altaz")
-                star_coords = SkyCoord(alt=ybsc_sub.Alt.values * u.deg,\
-                                       az=ybsc_sub.Az.values * u.deg,\
-                                       frame="altaz")
+                    sep = star_coords.separation(moon_coord)
+                    moon_mask = sep > 35 * u.deg
+                    ybsc_sub = ybsc_sub.loc[moon_mask]
+            
+            if run_ext:
+                # ----------------------------------------------------------
+                # Optical distortion model
+                # ----------------------------------------------------------
+
+                r = calc_r(np.deg2rad(ybsc_sub["Zenith"]), cfg.F_fit, cfg.R_fit,\
+                           cfg.k3_fit, cfg.k5_fit)
+
+                ybsc_sub["x_guess"] = (
+                    cfg.xz_fit +
+                    r * np.cos(np.deg2rad(ybsc_sub["Az"]) - cfg.theta_fit)
+                )
+
+                ybsc_sub["y_guess"] = (
+                    cfg.yz_fit -
+                    r * np.sin(np.deg2rad(ybsc_sub["Az"]) - cfg.theta_fit)
+                )
+
+                # ----------------------------------------------------------
+                # Catalog matching
+                # ----------------------------------------------------------
+
+                match_df = match_catalogs(ybsc_sub, tas_df, cfg.MATCH_RADIUS)
+
+                # ----------------------------------------------------------
+                # Photometry - Circular Aperture (best option for UTGO)
+                # ----------------------------------------------------------
+
+                phot_df = run_photometry_circ(im_gray, match_df, cfg.PHOT_APERTURE, JD, exp_time)
+
+                # ----------------------------------------------------------
+                # Extinction calculation and auxillary measurements
+                # ----------------------------------------------------------
+
+                extinction = make_exmap(output, t_str.isoformat(timespec = 'seconds'), im_gray,\
+                                        phot_df, cfg.MAG_ZEROPOINT, cfg.AIRMASS_TERM,\
+                                        float(exp_time), cfg.MAX_EXTINCTION, save)
                 
-                sep = star_coords.separation(moon_coord)
-                moon_mask = sep > 35 * u.deg
-                ybsc_sub = ybsc_sub.loc[moon_mask]
-
-            # ----------------------------------------------------------
-            # Optical distortion model
-            # ----------------------------------------------------------
-
-            r = calc_r(np.deg2rad(ybsc_sub["Zenith"]), cfg.F_fit, cfg.R_fit,\
-                       cfg.k3_fit, cfg.k5_fit)
-
-            ybsc_sub["x_guess"] = (
-                cfg.xz_fit +
-                r * np.cos(np.deg2rad(ybsc_sub["Az"]) - cfg.theta_fit)
-            )
-
-            ybsc_sub["y_guess"] = (
-                cfg.yz_fit -
-                r * np.sin(np.deg2rad(ybsc_sub["Az"]) - cfg.theta_fit)
-            )
-
-            # ----------------------------------------------------------
-            # Catalog matching
-            # ----------------------------------------------------------
-            
-            # Safety for matching
-            tas_df = tas_df.replace([np.inf, -np.inf], np.nan)
-            tas_df = tas_df.dropna(subset=['x_centroid', 'y_centroid'])
-            match_df = match_catalogs(ybsc_sub, tas_df, cfg.MATCH_RADIUS)
-
-            # ----------------------------------------------------------
-            # Photometry - Circular Aperture (best option for UTGO)
-            # ----------------------------------------------------------
-
-            phot_df = run_photometry_circ(im_gray, match_df, cfg.PHOT_APERTURE, JD, exp_time)
-
-            # ----------------------------------------------------------
-            # Extinction calculation and auxillary measurements
-            # ----------------------------------------------------------
-
-            extinction = make_exmap(output, t_str.isoformat(timespec = 'seconds'), im_gray,\
-                                    phot_df, cfg.MAG_ZEROPOINT, cfg.AIRMASS_TERM,\
-                                    float(exp_time), cfg.MAX_EXTINCTION, save)
-            
-            # Fraction of detected stars vs expected stars
-            detection_fraction = (len(phot_df.dropna(subset=['Flux'])) / len(ybsc_sub))
+                # Fraction of detected stars vs expected stars
+                detection_fraction = (len(tas_df)/len(ybsc_sub))
+                
+            else:
+                extinction = np.nan
+                detection_fraction = (len(tas_df)/len(ybsc_sub))
             
             if moon_alt is None:
                 moon_alt, moon_ill = np.nan, np.nan
@@ -356,7 +353,6 @@ def process_file(file, output, save = False, verbose = False):
                 print(f"Failed on {file}: Unable to extract time or date...")
     except:
         if verbose:
-            raise
             print(f"Failed on {file}")
         return None
 
@@ -371,7 +367,8 @@ if __name__ == "__main__":
     parser.add_argument("path", type=str, help="Path to video or image")
     parser.add_argument("type", type=str, help="Input type: 'video' or 'image'")
     parser.add_argument("output", type=str, help="Output directory")
-    parser.add_argument("save", type=str, help="Save extinction maps and photometry? (y/n)")
+    parser.add_argument("extinction", type=str, help="Run extinction calculations? (y/n)")
+    parser.add_argument("save", type=str, help="Save photometry, background & extinction maps? (y/n)")
     parser.add_argument("verbose", type=str, help="Do you want printed output? (y/n)")
     
     # --------------------------------------------------------------
@@ -382,13 +379,19 @@ if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     
     args = parser.parse_args()
-    nproc = int((mp.cpu_count() / 2))
     outpath = args.output
+    nproc = int((mp.cpu_count() / 2) + 1)
                  
     if args.save == 'y' or args.save == 'Y':
         save = True
     else:
         save = False
+    
+    if args.extinction == 'y' or args.extinction == 'Y':
+        run_ext = True
+    else:
+        run_ext = False
+        nproc = int(mp.cpu_count() - 1)
         
     if args.verbose == 'y' or args.verbose == 'Y':
         verbose = True
@@ -426,7 +429,7 @@ if __name__ == "__main__":
 
     try:
         # Submit all tasks
-        futures = {executor.submit(process_file, f, outpath, save, verbose): f for f in files}
+        futures = {executor.submit(process_file, f, outpath, run_ext, save, verbose): f for f in files}
 
         for i, future in enumerate(as_completed(futures), 1):
 
@@ -473,25 +476,26 @@ if __name__ == "__main__":
     if not results:  
         print("No frames were processed successfully.")
 
-    ext_vec, t_vec, bkg_vec, frac_vec, exp_vec, moon_alt_vec, moon_ill_vec = zip(*results)
-    
-    if len(t_vec) > 20:
-        # Save out the results
-        final_df = pd.DataFrame({
-        "JD": t_vec,
-        "DetectionFraction": frac_vec,
-        "SkyBkg": bkg_vec,
-        "ExtinctionIndex": ext_vec,
-        "ExpTime": exp_vec,
-        "MoonAlt": moon_alt_vec,
-        "MoonIll": moon_ill_vec
-        })
+    else:
+        ext_vec, t_vec, bkg_vec, frac_vec, exp_vec, moon_alt_vec, moon_ill_vec = zip(*results)
 
-        out_name = os.path.join(args.output, f"CloudDetection_{os.path.basename(args.path)}.csv")
-        final_df.to_csv(out_name, index=False)
-        
-        if verbose:
-            print("Saved:", out_name)
+        if len(t_vec) > 20:
+            # Save out the results
+            final_df = pd.DataFrame({
+            "JD": t_vec,
+            "DetectionFraction": frac_vec,
+            "SkyBkg": bkg_vec,
+            "ExtinctionIndex": ext_vec,
+            "ExpTime": exp_vec,
+            "MoonAlt": moon_alt_vec,
+            "MoonIll": moon_ill_vec
+            })
+
+            out_name = os.path.join(args.output, f"CloudDetection_{os.path.basename(args.path)}.csv")
+            final_df.sort_values('JD').to_csv(out_name, index=False)
+
+            if verbose:
+                print("Saved:", out_name)
     
     # Clean up files if not wanting to save
     if args.type == 'video':

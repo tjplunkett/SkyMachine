@@ -17,15 +17,15 @@ MOON_RADIUS = 100            # Moon mask circular radius
 MEDFILT_SIZE = 90            # Median filter window size
 
 # ---- Optical fit parameters ----
-F_fit = 1.762770
-R_fit = 338.324705
-k3_fit = 11.833700
-k5_fit = -0.986288
+F_fit = 1.769061
+R_fit = 338.650091
+k3_fit = 1.276095e+01
+k5_fit = -1.268911e+00
 
 # ---- Image center / geometry ----
-xz_fit = 326.464569
-yz_fit = 234.391257
-theta_fit = 3.132448
+xz_fit = 326.415618
+yz_fit = 234.568309
+theta_fit = 3.132197
 
 # ---- Extinction / photometric parameters ----
 MAG_ZEROPOINT = 4.75        # Magnitude Zeropoint
